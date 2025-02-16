@@ -1,4 +1,6 @@
-package ie.atu.sw;
+package ie.atu.sw.trainer;
+
+import java.util.List;
 
 public interface IAutopilotController {
 	/**
@@ -7,4 +9,6 @@ public interface IAutopilotController {
 	 * for no movement, and +1 for moving down.
 	 */
 	int getMovement(double[] state);
+
+	void trainNetwork(List<TrainingSample> trainingData, int epochs);
 }

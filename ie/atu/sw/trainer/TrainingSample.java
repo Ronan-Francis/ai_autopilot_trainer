@@ -1,4 +1,4 @@
-package ie.atu.sw;
+package ie.atu.sw.trainer;
 
 public class TrainingSample {
     private final double[] features;

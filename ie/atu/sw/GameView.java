@@ -11,11 +11,23 @@ import java.awt.Graphics;
 import java.awt.Graphics2D;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
+import java.io.BufferedWriter;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.io.PrintWriter;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedList;
+import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import javax.swing.JPanel;
 import javax.swing.Timer;
+
+import ie.atu.sw.trainer.IAutopilotController;
+import ie.atu.sw.trainer.NeuralNetworkAutopilot;
+import ie.atu.sw.trainer.TrainingSample;
 
 public class GameView extends JPanel implements ActionListener{
 	//Some constants
@@ -58,9 +70,14 @@ public class GameView extends JPanel implements ActionListener{
 	private Sprite sprite;
 	private Sprite dyingSprite;
 	
+	// A flag to indicate if the game is over and waiting for user input
+	private boolean gameOver = false;
+	
 	private boolean auto;
 	private IAutopilotController autopilot;
 	private int lastMovement = 0; // -1 for up, 0 for straight, +1 for down
+	private List<TrainingSample> trainingData = new ArrayList<>();
+	private static final ExecutorService dataWriterExecutor = Executors.newSingleThreadExecutor();
 
 	public GameView(boolean auto) throws Exception{
 		this.auto = auto; //Use the autopilot
@@ -77,7 +94,9 @@ public class GameView extends JPanel implements ActionListener{
 		// If autopilot is enabled, create an autopilot controller
 		if(this.auto) {
 			// Use the size of the sampled state (eg. 30*20) as the input layer size.
-			autopilot = new NeuralNetworkAutopilot(30 * 20);
+			autopilot = new NeuralNetworkAutopilot(
+					/* inputSize = horizon columns * MODEL_HEIGHT + 1 if adding lastMovement */  
+					(MODEL_WIDTH - (PLAYER_COLUMN+1)) * MODEL_HEIGHT + 1);
 		}
     	
 		timer = new Timer(TIMER_INTERVAL, this); //Timer calls actionPerformed() every second
@@ -117,7 +136,7 @@ public class GameView extends JPanel implements ActionListener{
 
         		if (model.get(x)[y] != 0) {
             		if (y == playerRow && x == PLAYER_COLUMN) {
-            			timer.stop(); //Crash...
+            			end(); //Crash...
             		}
             		g2.setColor(Color.BLACK);
             		g2.fillRect(x1, y1, SCALING_FACTOR, SCALING_FACTOR);
@@ -144,7 +163,7 @@ public class GameView extends JPanel implements ActionListener{
         g2.setColor(Color.WHITE);
         g2.drawString("Time: " + (int)(time * (TIMER_INTERVAL/1000.0d)) + "s", 1 * SCALING_FACTOR + 10, (15 * SCALING_FACTOR) + (2 * SCALING_FACTOR));
         
-        if (!timer.isRunning()) {
+        if (!timer.isRunning() && gameOver) {
 			g2.setFont(over);
 			g2.setColor(Color.RED);
 			g2.drawString("Game Over!", MODEL_WIDTH / 5 * SCALING_FACTOR, MODEL_HEIGHT / 2* SCALING_FACTOR);
@@ -155,6 +174,11 @@ public class GameView extends JPanel implements ActionListener{
 	public void move(int step) {
 		playerRow += step;
 		lastMovement = step;  // Keep track of this move
+		
+	    // If the plane goes below 0 or above MODEL_HEIGHT - 1, crash the game
+	    if (playerRow < 0 || playerRow >= MODEL_HEIGHT) {
+	    	end(); // Game Over
+	    }
 	}
 	
 	
@@ -181,35 +205,71 @@ public class GameView extends JPanel implements ActionListener{
 	
 	//Called every second by the timer 
 	public void actionPerformed(ActionEvent e) {
-		time++; //Update our timer
-		this.repaint(); //Repaint the cavern
-		
-		//Update the next index to generate
-		index++;
-		index = (index == MODEL_WIDTH) ? 0 : index;
-		
-		generateNext(); //Generate the next part of the cave
-		if (auto) autoMove();
-		
-		/*
-		 * Use something like the following to extract training data.
-		 * It might be a good idea to submit the double[] returned by
-		 * the sample() method to an executor and then write it out 
-		 * to file. You'll need to label the data too and perhaps add
-		 * some more features... Finally, you do not have to sample 
-		 * the data every TIMER_INTERVAL units of time. Use some modular
-		 * arithmetic as shown below. Alternatively, add a key stroke 
-		 * to fire an event that starts the sampling.
-		 */
-		if (time % 10 == 0) {
-			/*
-			 * double[] trainingRow = sample();
-			 * System.out.println(Arrays.toString(trainingRow));
-			 */
-		}
+	    // 1) Increment time & repaint
+	    time++;
+	    this.repaint();
+
+	    // 2) Generate cave updates
+	    index++;
+	    if (index == MODEL_WIDTH) {
+	        index = 0;
+	    }
+	    generateNext();
+
+	    // 3) If autopilot is enabled, let it choose the move
+	    if (auto) {
+	        autoMove();
+	    }
+
+	    // 4) Collect a training sample every 3 steps
+	    if (time % 3 == 0) {
+	        // This sample includes the plane’s last movement as the label
+	        TrainingSample ts = createTrainingSample();
+	        trainingData.add(ts);
+	    }
+
+	    // 5) Every 10 steps, also write a row out to a file asynchronously
+	    //    to avoid blocking the game loop
+	    if (time % 10 == 0) {
+	        // Build the raw state & label. We’re using sampleHorizonWithMovement()
+	        // plus the lastMovement as a label. This is just an example –
+	        // you could add more features if you wish.
+	        double[] trainingRow = sampleHorizonWithMovementAndPosition();
+	        double label = lastMovement;
+
+	        // Also store a new training sample in memory (if desired)
+	        TrainingSample ts = new TrainingSample(trainingRow, label);
+	        trainingData.add(ts);
+
+	        // Queue up the CSV write in a background thread
+	        dataWriterExecutor.submit(() -> {
+	            writeRowToFile("training_data.csv", trainingRow, label);
+	        });
+	    }
 	}
 	
-	
+	private void writeRowToFile(String filename, double[] features, double label) {
+	    try (FileWriter fw = new FileWriter(filename, true);
+	         BufferedWriter bw = new BufferedWriter(fw);
+	         PrintWriter out = new PrintWriter(bw)) {
+
+	        // Print each feature separated by commas
+	        for (int i = 0; i < features.length; i++) {
+	            out.print(features[i]);
+	            if (i < features.length - 1) {
+	                out.print(",");
+	            }
+	        }
+	        // Finally print the label, then newline
+	        out.print("," + label);
+	        out.println();
+
+	    } catch (IOException e) {
+	        e.printStackTrace();
+	    }
+	}
+
+
 	/*
 	 * Generate the next layer of the cavern. Use the linked list to
 	 * move the current head element to the tail and then randomly
@@ -302,13 +362,17 @@ public class GameView extends JPanel implements ActionListener{
 	    return features;
 	}
 	
-	public TrainingSample createTrainingSample() {
-	    // Example: Only horizon columns as input features
+	public double[] sampleHorizonWithMovementAndPosition() {
 	    int horizonStart = PLAYER_COLUMN + 1;
 	    int horizonColumns = MODEL_WIDTH - horizonStart;
-	    double[] features = new double[horizonColumns * MODEL_HEIGHT];
 
+	    // horizon columns * MODEL_HEIGHT
+	    // + 1 for lastMovement
+	    // + 1 for planeRow (or a normalized version)
+	    double[] features = new double[horizonColumns * MODEL_HEIGHT + 2];
 	    int index = 0;
+
+	    // 1) Fill horizon columns
 	    for (int x = horizonStart; x < MODEL_WIDTH; x++) {
 	        byte[] col = model.get(x);
 	        for (int y = 0; y < MODEL_HEIGHT; y++) {
@@ -316,18 +380,51 @@ public class GameView extends JPanel implements ActionListener{
 	        }
 	    }
 
+	    // 2) Append lastMovement
+	    features[index++] = lastMovement;
+
+	    // 3) Append plane’s row (or a normalized row from 0..1)
+	    features[index] = (double) playerRow / (double) MODEL_HEIGHT;
+
+	    return features;
+	}
+	
+	public TrainingSample createTrainingSample() {
 	    // The label is the plane's actual move from the previous step
 	    double label = lastMovement;
-
+	    double[] features = sampleHorizonWithMovement();
 	    return new TrainingSample(features, label);
 	}
 
-	
+	/**
+	 * Called when the game ends (e.g. crash/out-of-bounds).
+	 */
+	public void end() {
+	    timer.stop(); // Stop updating the game
+	    
+	    // Calculate how many seconds have passed
+	    double survivalTime = time * (TIMER_INTERVAL / 1000.0);
+
+	    // If survival time <= 5 seconds, auto-restart
+	    if (survivalTime <= 5.0) {
+	        reset();
+	    } else {
+	        // Otherwise, show "Game Over!" until user presses S
+	        gameOver = true;
+	        repaint();
+	    }
+	}
 	
 	/*
 	 * Resets and restarts the game when the "S" key is pressed
 	 */
 	public void reset() {
+	    //train on whatever data we collected so far before clearing:
+	    if (auto && !trainingData.isEmpty()) {
+	        autopilot.trainNetwork(trainingData, /* e.g. 1000 epochs */ 1000);
+	        trainingData.clear();
+	    }
+	    
 		model.stream() 		//Zero out the grid
 		     .forEach(n -> Arrays.fill(n, 0, n.length, ZERO_SET));
 		playerRow = 11;		//Centre the plane

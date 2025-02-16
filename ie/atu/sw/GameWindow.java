@@ -10,7 +10,7 @@ public class GameWindow implements KeyListener{
 	private GameView view;
 	
 	public GameWindow() throws Exception {
-		view = new GameView(false); //Use true to get the plane to fly in autopilot mode...
+		view = new GameView(true); //Use true to get the plane to fly in autopilot mode...
 		init();
 		loadSprites();
 	}
