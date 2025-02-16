@@ -59,6 +59,8 @@ public class GameView extends JPanel implements ActionListener{
 	private Sprite dyingSprite;
 	
 	private boolean auto;
+	private IAutopilotController autopilot;
+	private int lastMovement = 0; // -1 for up, 0 for straight, +1 for down
 
 	public GameView(boolean auto) throws Exception{
 		this.auto = auto; //Use the autopilot
@@ -72,9 +74,16 @@ public class GameView extends JPanel implements ActionListener{
     	super.setMaximumSize(dim);
 		
     	initModel();
+		// If autopilot is enabled, create an autopilot controller
+		if(this.auto) {
+			// Use the size of the sampled state (eg. 30*20) as the input layer size.
+			autopilot = new NeuralNetworkAutopilot(30 * 20);
+		}
     	
 		timer = new Timer(TIMER_INTERVAL, this); //Timer calls actionPerformed() every second
 		timer.start();
+
+		
 	}
 	
 	//Build our game grid
@@ -145,6 +154,7 @@ public class GameView extends JPanel implements ActionListener{
 	//Move the plane up or down
 	public void move(int step) {
 		playerRow += step;
+		lastMovement = step;  // Keep track of this move
 	}
 	
 	
@@ -159,7 +169,13 @@ public class GameView extends JPanel implements ActionListener{
 	 *  
 	 */
 	private void autoMove() {
-		move(current().nextInt(-1, 2)); //Move -1 (up), 0 (nowhere), 1 (down)
+		if(autopilot != null) {
+			double[] state = sample();
+			move(autopilot.getMovement(state));
+		} else {
+			// Fallback: random movement if autopilot is not avaliable
+			move(current().nextInt(-1, 2)); //Move -1 (up), 0 (nowhere), 1 (down)
+		}
 	}
 
 	
@@ -247,6 +263,65 @@ public class GameView extends JPanel implements ActionListener{
 		}
 		return vector;
 	}
+	
+	public double[] sampleHorizon() { 
+		// The horizon starts right after the player's column. 
+		int horizonStart = PLAYER_COLUMN + 1; 
+		int horizonColumns = MODEL_WIDTH - horizonStart; 
+		double[] vector = new double[horizonColumns * MODEL_HEIGHT];
+		int index = 0;
+
+		// Loop over each column ahead of the player
+		for (int x = horizonStart; x < MODEL_WIDTH; x++) {
+		    byte[] col = model.get(x);
+		    for (int y = 0; y < MODEL_HEIGHT; y++) {
+		        vector[index++] = col[y];
+		    }
+		}
+		return vector;
+	}
+	
+	public double[] sampleHorizonWithMovement() {
+	    int horizonStart = PLAYER_COLUMN + 1;
+	    int horizonColumns = MODEL_WIDTH - horizonStart;
+
+	    // +1 space to accommodate the last movement feature
+	    double[] features = new double[horizonColumns * MODEL_HEIGHT + 1];
+
+	    int index = 0;
+	    for (int x = horizonStart; x < MODEL_WIDTH; x++) {
+	        byte[] col = model.get(x);
+	        for (int y = 0; y < MODEL_HEIGHT; y++) {
+	            features[index++] = col[y];
+	        }
+	    }
+
+	    // Append the last movement (-1, 0, +1)
+	    features[index] = lastMovement;
+
+	    return features;
+	}
+	
+	public TrainingSample createTrainingSample() {
+	    // Example: Only horizon columns as input features
+	    int horizonStart = PLAYER_COLUMN + 1;
+	    int horizonColumns = MODEL_WIDTH - horizonStart;
+	    double[] features = new double[horizonColumns * MODEL_HEIGHT];
+
+	    int index = 0;
+	    for (int x = horizonStart; x < MODEL_WIDTH; x++) {
+	        byte[] col = model.get(x);
+	        for (int y = 0; y < MODEL_HEIGHT; y++) {
+	            features[index++] = col[y];
+	        }
+	    }
+
+	    // The label is the plane's actual move from the previous step
+	    double label = lastMovement;
+
+	    return new TrainingSample(features, label);
+	}
+
 	
 	
 	/*
