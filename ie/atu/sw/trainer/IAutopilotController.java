@@ -3,12 +3,19 @@ package ie.atu.sw.trainer;
 import java.util.List;
 
 public interface IAutopilotController {
-	/**
-	 * * Given a snapshot of the game state (for example, a flat array of cell
-	 * values), * return an integer representing the movement: * -1 for moving up, 0
-	 * for no movement, and +1 for moving down.
+	/*
+	 * Given a state vector, compute the next movement.
+	 * 
+	 * @param state the input state (features)
+	 * @return the movement decision: -1 for up, 0 for straight, 1 for down.
 	 */
 	int getMovement(double[] state);
 
+	/*
+	 * Train the neural network with the given training data.
+	 * 
+	 * @param trainingData a list of training samples
+	 * @param epochs the number of training epochs to perform
+	 */
 	void trainNetwork(List<TrainingSample> trainingData, int epochs);
 }
