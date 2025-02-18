@@ -1,4 +1,4 @@
-package ie.atu.sw.trainer;
+package ie.atu.sw.autopilot;
 
 import java.util.List;
 

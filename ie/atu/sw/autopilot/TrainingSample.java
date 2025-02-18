@@ -1,7 +1,6 @@
-package ie.atu.sw.trainer;
+package ie.atu.sw.autopilot;
 
 /**
- * 
  * A simple, immutable data carrier for a training example.
  * It is deliberately minimal to support a data‐oriented style.
  */

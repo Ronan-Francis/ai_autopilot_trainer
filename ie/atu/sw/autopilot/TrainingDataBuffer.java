@@ -1,13 +1,10 @@
-package ie.atu.sw.trainer;
+package ie.atu.sw.autopilot;
 
 import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 
- * A data‐oriented container that aggregates training examples in contiguous
- * lists.
- * 
+ * A data‐oriented container that aggregates training examples in contiguous lists.
  * This allows conversion into dense primitive arrays before training, which is
  * more cache friendly.
  */
@@ -16,7 +13,6 @@ public class TrainingDataBuffer {
 	private final List<double[]> labelList = new ArrayList<>();
 
 	/**
-	 * 
 	 * Adds a new training sample.
 	 * 
 	 * @param features the input feature vector.
@@ -28,7 +24,6 @@ public class TrainingDataBuffer {
 	}
 
 	/**
-	 * 
 	 * Returns the features as a 2D array.
 	 */
 	public double[][] getFeaturesArray() {
@@ -36,7 +31,6 @@ public class TrainingDataBuffer {
 	}
 
 	/**
-	 * 
 	 * Returns the labels as a 2D array.
 	 */
 	public double[][] getLabelArray() {
@@ -44,7 +38,6 @@ public class TrainingDataBuffer {
 	}
 
 	/**
-	 * 
 	 * The number of samples stored.
 	 */
 	public int size() {
@@ -52,7 +45,6 @@ public class TrainingDataBuffer {
 	}
 
 	/**
-	 * 
 	 * Clears all stored samples.
 	 */
 	public void clear() {

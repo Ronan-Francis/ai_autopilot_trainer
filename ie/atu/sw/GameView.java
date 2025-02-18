@@ -21,365 +21,351 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-
 import javax.swing.JPanel;
 import javax.swing.Timer;
-
-import ie.atu.sw.trainer.IAutopilotController;
-import ie.atu.sw.trainer.NeuralNetworkAutopilot;
-import ie.atu.sw.trainer.TrainingSample;
+import ie.atu.sw.autopilot.IAutopilotController;
+import ie.atu.sw.autopilot.NeuralNetworkAutopilot;
+import ie.atu.sw.autopilot.TrainingSample;
 
 public class GameView extends JPanel implements ActionListener {
-	// Some constants
-	private static final long serialVersionUID = 1L;
-	private static final int MODEL_WIDTH = 30;
-	private static final int MODEL_HEIGHT = 20;
-	private static final int SCALING_FACTOR = 30;
 
-	private static final int MIN_TOP = 2;
-	private static final int MIN_BOTTOM = 18;
-	private static final int PLAYER_COLUMN = 15;
-	private static final int TIMER_INTERVAL = 100;
+    private static final long serialVersionUID = 1L;
+    private static final int MODEL_WIDTH = 30;
+    private static final int MODEL_HEIGHT = 20;
+    private static final int SCALING_FACTOR = 30;
 
-	private static final byte ONE_SET = 1;
-	private static final byte ZERO_SET = 0;
+    private static final int MIN_TOP = 2;
+    private static final int MIN_BOTTOM = 18;
+    private static final int PLAYER_COLUMN = 15;
+    private static final int TIMER_INTERVAL = 100;
 
-	/*
-	 * The 30x20 game grid is implemented using a linked list of 30 elements, where
-	 * each element contains a byte[] of size 20.
-	 */
-	private LinkedList<byte[]> model = new LinkedList<>();
+    private static final byte ONE_SET = 1;
+    private static final byte ZERO_SET = 0;
 
-	// These two variables are used by the cavern generator.
-	private int prevTop = MIN_TOP;
-	private int prevBot = MIN_BOTTOM;
+    /*
+     * The game grid is implemented as a linked list of MODEL_WIDTH columns,
+     * where each column is represented by a byte array of size MODEL_HEIGHT.
+     */
+    private final LinkedList<byte[]> model = new LinkedList<>();
 
-	// Once the timer stops, the game is over
-	private Timer timer;
-	private long time;
+    // Variables for the cavern generator.
+    private int prevTop = MIN_TOP;
+    private int prevBot = MIN_BOTTOM;
 
-	private int playerRow = 11;
-	private int index = MODEL_WIDTH - 1; // Start generating at the end
-	private Dimension dim;
+    private Timer timer;
+    private long time;
 
-	// Some fonts for the UI display
-	private Font font = new Font("Dialog", Font.BOLD, 50);
-	private Font over = new Font("Dialog", Font.BOLD, 100);
+    private int playerRow = 11;
+    private final Dimension dim;
 
-	// The player and a sprite for an exploding plane
-	private Sprite sprite;
-	private Sprite dyingSprite;
+    // Fonts for UI display.
+    private final Font timeFont = new Font("Dialog", Font.BOLD, 50);
+    private final Font gameOverFont = new Font("Dialog", Font.BOLD, 100);
 
-	// A flag to indicate if the game is over and waiting for user input
-	private boolean gameOver = false;
+    // Sprites for the plane and explosion.
+    private Sprite sprite;
+    private Sprite dyingSprite;
 
-	private boolean auto;
-	private IAutopilotController autopilot;
-	private final List<TrainingSample> trainingData = new ArrayList<>();
-	private static final ExecutorService dataWriterExecutor = Executors.newSingleThreadExecutor();
-	private boolean terminalFlag = false;
-	private int lastMovement = 0; // -1 for up, 0 for straight, 1 for down
-	private double bestTime = 0; // Track the best (longest) flight time recorded.
-	private boolean goodFlag = false;// Flag that indicates a good flight.
-	private double currentFlightTime = 0;
-	// Set a threshold value that, if exceeded, is considered a good flight.
-	private static final double MAX_GOOD_FLIGHT_TIME = 30.0; // For example, 20 seconds.
+    // Game state flags.
+    private boolean gameOver = false;
+    private boolean autoMode;
+    private IAutopilotController autopilot;
+    private final List<TrainingSample> trainingData = new ArrayList<>();
+    private static final ExecutorService dataWriterExecutor = Executors.newSingleThreadExecutor();
 
-	public GameView(boolean auto) throws Exception {
-		this.auto = auto; // Use the autopilot
-		setBackground(Color.LIGHT_GRAY);
-		setDoubleBuffered(true);
+    // Flight data
+    private boolean terminalFlag = false;
+    private int lastMovement = 0; // -1 for up, 0 for straight, 1 for down
+    private double bestTime = 0;
+    private boolean goodFlag = false; // Indicates a "good" flight.
+    private double currentFlightTime = 0;
+    private static final double MAX_GOOD_FLIGHT_TIME = 30.0; // Flight time threshold in seconds
 
-		// Creates a viewing area of 900 x 600 pixels
-		dim = new Dimension(MODEL_WIDTH * SCALING_FACTOR, MODEL_HEIGHT * SCALING_FACTOR);
-		super.setPreferredSize(dim);
-		super.setMinimumSize(dim);
-		super.setMaximumSize(dim);
+    public GameView(boolean autoMode) throws Exception {
+        this.autoMode = autoMode;
+        setBackground(Color.LIGHT_GRAY);
+        setDoubleBuffered(true);
 
-		initModel();
-	    // Input size = (columns ahead of player * MODEL_HEIGHT) + 1 (lastMovement) + 1 (planeRow) 
-	    // + 1 (terminal flag) + 1 (good flag) = total extra of 4.
-	    if (this.auto) {
-	        int inputSize = (MODEL_WIDTH - (PLAYER_COLUMN + 1)) * MODEL_HEIGHT + 4;
-	        System.out.println(inputSize);
-	        autopilot = new NeuralNetworkAutopilot(inputSize);
-	    }
+        // Set panel size
+        dim = new Dimension(MODEL_WIDTH * SCALING_FACTOR, MODEL_HEIGHT * SCALING_FACTOR);
+        setPreferredSize(dim);
+        setMinimumSize(dim);
+        setMaximumSize(dim);
 
-		timer = new Timer(TIMER_INTERVAL, this); // Timer calls actionPerformed() every second
-		timer.start();
+        initModel();
 
-	}
+        // Input size for the neural network:
+        // (columns ahead of player * MODEL_HEIGHT) + 4 extra features.
+        if (this.autoMode) {
+            int horizonColumns = MODEL_WIDTH - (PLAYER_COLUMN + 1);
+            int inputSize = (horizonColumns * MODEL_HEIGHT) + 4;
+            System.out.println("Neural Network Input Size: " + inputSize);
+            autopilot = new NeuralNetworkAutopilot(inputSize);
+        }
 
-	// Build our game grid
-	private void initModel() {
-		for (int i = 0; i < MODEL_WIDTH; i++) {
-			model.add(new byte[MODEL_HEIGHT]);
-		}
-	}
+        timer = new Timer(TIMER_INTERVAL, this);
+        timer.start();
+    }
 
-	public void setSprite(Sprite s) {
-		this.sprite = s;
-	}
+    /**
+     * Initializes the game grid with empty (zero) values.
+     */
+    private void initModel() {
+        for (int i = 0; i < MODEL_WIDTH; i++) {
+            model.add(new byte[MODEL_HEIGHT]);
+        }
+    }
 
-	public void setDyingSprite(Sprite s) {
-		this.dyingSprite = s;
-	}
+    public void setSprite(Sprite s) {
+        this.sprite = s;
+    }
 
-	// Called every second by actionPerformed(). Paint methods are usually ugly.
-	public void paintComponent(Graphics g) {
-		super.paintComponent(g);
-		var g2 = (Graphics2D) g;
+    public void setDyingSprite(Sprite s) {
+        this.dyingSprite = s;
+    }
 
-		g2.setColor(Color.WHITE);
-		g2.fillRect(0, 0, dim.width, dim.height);
+    @Override
+    public void paintComponent(Graphics g) {
+        super.paintComponent(g);
+        Graphics2D g2 = (Graphics2D) g;
 
-		int x1 = 0, y1 = 0;
-		for (int x = 0; x < MODEL_WIDTH; x++) {
-			for (int y = 0; y < MODEL_HEIGHT; y++) {
-				x1 = x * SCALING_FACTOR;
-				y1 = y * SCALING_FACTOR;
+        // Draw background.
+        g2.setColor(Color.WHITE);
+        g2.fillRect(0, 0, dim.width, dim.height);
 
-				if (model.get(x)[y] != 0) {
-					if (y == playerRow && x == PLAYER_COLUMN) {
-						end(); // Crash...
-					}
-					g2.setColor(Color.BLACK);
-					g2.fillRect(x1, y1, SCALING_FACTOR, SCALING_FACTOR);
-				}
+        // Draw grid and sprites.
+        for (int x = 0; x < MODEL_WIDTH; x++) {
+            for (int y = 0; y < MODEL_HEIGHT; y++) {
+                int x1 = x * SCALING_FACTOR;
+                int y1 = y * SCALING_FACTOR;
 
-				if (x == PLAYER_COLUMN && y == playerRow) {
-					if (timer.isRunning()) {
-						g2.drawImage(sprite.getNext(), x1, y1, null);
-					} else {
-						g2.drawImage(dyingSprite.getNext(), x1, y1, null);
-					}
+                // Draw obstacles.
+                if (model.get(x)[y] != 0) {
+                    // If the plane collides with an obstacle, end the game.
+                    if (y == playerRow && x == PLAYER_COLUMN) {
+                        end();
+                    }
+                    g2.setColor(Color.BLACK);
+                    g2.fillRect(x1, y1, SCALING_FACTOR, SCALING_FACTOR);
+                }
 
-				}
-			}
-		}
+                // Draw the player.
+                if (x == PLAYER_COLUMN && y == playerRow) {
+                    if (timer.isRunning()) {
+                        g2.drawImage(sprite.getNext(), x1, y1, null);
+                    } else {
+                        g2.drawImage(dyingSprite.getNext(), x1, y1, null);
+                    }
+                }
+            }
+        }
 
-		/*
-		 * Not pretty, but good enough for this project... The compiler will tidy up and
-		 * optimise all of the arithmetics with constants below.
-		 */
-		g2.setFont(font);
-		g2.setColor(Color.RED);
-		g2.fillRect(1 * SCALING_FACTOR, 15 * SCALING_FACTOR, 400, 3 * SCALING_FACTOR);
-		g2.setColor(Color.WHITE);
-		g2.drawString("Time: " + (int) (time * (TIMER_INTERVAL / 1000.0d)) + "s", 1 * SCALING_FACTOR + 10,
-				(15 * SCALING_FACTOR) + (2 * SCALING_FACTOR));
+        // Draw UI: flight time display.
+        g2.setFont(timeFont);
+        g2.setColor(Color.RED);
+        g2.fillRect(1 * SCALING_FACTOR, 15 * SCALING_FACTOR, 400, 3 * SCALING_FACTOR);
+        g2.setColor(Color.WHITE);
+        int flightTimeSeconds = (int) (time * (TIMER_INTERVAL / 1000.0));
+        g2.drawString("Time: " + flightTimeSeconds + "s", 1 * SCALING_FACTOR + 10,
+                (15 * SCALING_FACTOR) + (2 * SCALING_FACTOR));
 
-		if (!timer.isRunning() && gameOver) {
-			g2.setFont(over);
-			g2.setColor(Color.RED);
-			g2.drawString("Game Over!", MODEL_WIDTH / 5 * SCALING_FACTOR, MODEL_HEIGHT / 2 * SCALING_FACTOR);
-		}
-	}
+        // Draw Game Over screen.
+        if (!timer.isRunning() && gameOver) {
+            g2.setFont(gameOverFont);
+            g2.setColor(Color.RED);
+            g2.drawString("Game Over!", (MODEL_WIDTH / 5) * SCALING_FACTOR, (MODEL_HEIGHT / 2) * SCALING_FACTOR);
+        }
+    }
 
-	// Move the plane up or down
-	public void move(int step) {
-		playerRow += step;
-		lastMovement = step; // Keep track of this move
+    /**
+     * Moves the plane up or down.
+     * 
+     * @param step -1 for up, 0 for straight, 1 for down.
+     */
+    public void move(int step) {
+        playerRow += step;
+        lastMovement = step;
 
-		// If the plane goes below 0 or above MODEL_HEIGHT - 1, crash the game
-		if (playerRow < 0 || playerRow >= MODEL_HEIGHT) {
-			end(); // Game Over
-		}
-	}
+        // Check bounds.
+        if (playerRow < 0 || playerRow >= MODEL_HEIGHT) {
+            end();
+        }
+    }
 
-	/*
-	 * ---------- AUTOPILOT! ---------- The following implementation randomly picks
-	 * a -1, 0, 1 to control the plane. You should plug the trained neural network
-	 * in here. This method is called by the timer every TIMER_INTERVAL units of
-	 * time from actionPerformed(). There are other ways of wiring your neural
-	 * network into the application, but this way might be the easiest.
-	 * 
-	 */
-	private void autoMove() {
-		if (autopilot != null) {
-			double[] state = sample();
-			move(autopilot.getMovement(state));
-		} else {
-			move(current().nextInt(-1, 2));
-		}
-	}
+    /**
+     * Invokes autopilot movement if enabled; otherwise, moves randomly.
+     */
+    private void autoMove() {
+        if (autopilot != null) {
+            double[] state = sample();
+            move(autopilot.getMovement(state));
+        } else {
+            move(current().nextInt(-1, 2));
+        }
+    }
 
-	// Called every second by the timer
-	public void actionPerformed(ActionEvent e) {
-		// Increment time & repaint
-		time++;
-		this.repaint();
+    @Override
+    public void actionPerformed(ActionEvent e) {
+        time++;
+        repaint();
 
-		// Generate cave updates
-		index++;
-		if (index == MODEL_WIDTH) {
-			index = 0;
-		}
-		generateNext();
+        updateCave();
+        if (autoMode) {
+            autoMove();
+        }
 
-		// If autopilot is enabled, let it choose the move
-		if (auto) {
-			autoMove();
-		}
+        // Every 3 ticks, record training sample.
+        if (time % 3 == 0) {
+            double[] sample = sampleHorizonWithMovementAndPosition();
+            trainingData.add(new TrainingSample(sample, lastMovement));
 
-		if (time % 3 == 0) {
-			double[] sample = sampleHorizonWithMovementAndPosition();
-			trainingData.add(new TrainingSample(sample, lastMovement));
+            // Write sample to CSV asynchronously every 10 ticks.
+            if (time % 10 == 0) {
+                dataWriterExecutor.submit(() -> writeRowToFile("training_data.csv", sample, lastMovement, goodFlag));
+            }
+        }
+    }
 
-			// Every 10 ticks, write the sample to a CSV file asynchronously.
-			if (time % 10 == 0) {
-				dataWriterExecutor.submit(() -> writeRowToFile("training_data.csv", sample, lastMovement));
-			}
-		}
-	}
+    /**
+     * Writes a single row to a CSV file. Each row contains the feature vector,
+     * the last movement, and the good flight flag.
+     *
+     * @param fileName     The file to which the row is written.
+     * @param sample       The feature vector.
+     * @param lastMovement The last movement (-1, 0, or 1).
+     * @param goodFlag     True if the flight is considered good.
+     */
+    private static synchronized void writeRowToFile(String fileName, double[] sample, int lastMovement, boolean goodFlag) {
+        try (FileWriter fw = new FileWriter(fileName, true);
+             BufferedWriter bw = new BufferedWriter(fw);
+             PrintWriter out = new PrintWriter(bw)) {
 
-	private void writeRowToFile(String filename, double[] features, double label) {
-		try (FileWriter fw = new FileWriter(filename, true);
-				BufferedWriter bw = new BufferedWriter(fw);
-				PrintWriter out = new PrintWriter(bw)) {
+            StringBuilder sb = new StringBuilder();
+            // Append each feature.
+            for (double feature : sample) {
+                sb.append(feature).append(",");
+            }
+            sb.append(lastMovement).append(",");
+            sb.append(goodFlag ? 1 : 0);
 
-			// Print each feature separated by commas
-			for (int i = 0; i < features.length; i++) {
-				out.print(features[i]);
-				if (i < features.length - 1) {
-					out.print(",");
-				}
-			}
-			// Finally print the label, then newline
-			out.print("," + label);
-			out.println();
+            out.println(sb.toString());
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
 
-		} catch (IOException e) {
-			e.printStackTrace();
-		}
-	}
+    /**
+     * Updates the cave by moving the oldest column to the tail and generating new
+     * obstacles.
+     */
+    private void updateCave() {
+        byte[] nextColumn = model.pollFirst();
+        model.addLast(nextColumn);
+        Arrays.fill(nextColumn, ONE_SET);
 
-	/*
-	 * Generate the next layer of the cavern. Use the linked list to move the
-	 * current head element to the tail and then randomly decide whether to increase
-	 * or decrease the cavern.
-	 */
-	private void generateNext() {
-		var next = model.pollFirst();
-		model.addLast(next); // Move the head to the tail
-		Arrays.fill(next, ONE_SET); // Fill everything in
+        // Determine new cavern boundaries.
+        int minSpace = 4; // Minimum gap size.
+        prevTop += current().nextBoolean() ? 1 : -1;
+        prevBot += current().nextBoolean() ? 1 : -1;
+        prevTop = max(MIN_TOP, min(prevTop, prevBot - minSpace));
+        prevBot = min(MIN_BOTTOM, max(prevBot, prevTop + minSpace));
 
-		// Flip a coin to determine if we could grow or shrink the cave
-		var minspace = 4; // Smaller values will create a cave with smaller spaces
-		prevTop += current().nextBoolean() ? 1 : -1;
-		prevBot += current().nextBoolean() ? 1 : -1;
-		prevTop = max(MIN_TOP, min(prevTop, prevBot - minspace));
-		prevBot = min(MIN_BOTTOM, max(prevBot, prevTop + minspace));
+        // Carve out the cavern.
+        Arrays.fill(nextColumn, prevTop, prevBot, ZERO_SET);
+    }
 
-		// Fill in the array with the carved area
-		Arrays.fill(next, prevTop, prevBot, ZERO_SET);
-	}
+    /**
+     * Samples the entire game grid (flattened) for use by the neural network.
+     *
+     * @return A double array representation of the grid.
+     */
+    public double[] sample() {
+        double[] vector = new double[MODEL_WIDTH * MODEL_HEIGHT];
+        int index = 0;
+        for (byte[] column : model) {
+            for (byte cell : column) {
+                vector[index++] = cell;
+            }
+        }
+        return vector;
+    }
 
-	/*
-	 * Use this method to get a snapshot of the 30x20 matrix of values that make up
-	 * the game grid. The grid is flatmapped into a single dimension double array...
-	 * (somewhat) ready to be used by a neural net. You can experiment around with
-	 * how much of this you actually will need. The plane is always somehere in
-	 * column PLAYER_COLUMN and you probably do not need any of the columns behind
-	 * this. You can consider all of the columns ahead of PLAYER_COLUMN as your
-	 * horizon and this value can be reduced to save space and time if needed, e.g.
-	 * just look 1, 2 or 3 columns ahead.
-	 * 
-	 * You may also want to track the last player movement, i.e. up, down or no
-	 * change. Depending on how you design your neural network, you may also want to
-	 * label the data as either okay or dead. Alternatively, the label might be the
-	 * movement (up, down or straight).
-	 * 
-	 */
-	public double[] sample() {
-		var vector = new double[MODEL_WIDTH * MODEL_HEIGHT];
-		var index = 0;
+    /**
+     * Samples the horizon (columns ahead of the player) and appends extra
+     * features.
+     *
+     * Feature vector:
+     * - Obstacle state for columns ahead of the player.
+     * - Last movement.
+     * - Normalized player row position.
+     * - Terminal flag.
+     * - Good flight flag.
+     *
+     * @return The feature vector.
+     */
+    public double[] sampleHorizonWithMovementAndPosition() {
+        int horizonStart = PLAYER_COLUMN + 1;
+        int horizonColumns = MODEL_WIDTH - horizonStart;
+        int featureVectorSize = (horizonColumns * MODEL_HEIGHT) + 4;
+        double[] features = new double[featureVectorSize];
+        int index = 0;
 
-		for (byte[] bm : model) {
-			for (byte b : bm) {
-				vector[index] = b;
-				index++;
-			}
-		}
-		return vector;
-	}
+        // Append horizon columns.
+        for (int x = horizonStart; x < MODEL_WIDTH; x++) {
+            byte[] column = model.get(x);
+            for (int y = 0; y < MODEL_HEIGHT; y++) {
+                features[index++] = column[y];
+            }
+        }
 
-	public double[] sampleHorizonWithMovementAndPosition() {
-	    int horizonStart = PLAYER_COLUMN + 1;
-	    int horizonColumns = MODEL_WIDTH - horizonStart;
+        // Append extra features.
+        features[index++] = lastMovement;
+        features[index++] = (double) playerRow / MODEL_HEIGHT;
+        features[index++] = terminalFlag ? 1.0 : 0.0;
+        features[index]   = goodFlag ? 1.0 : 0.0;
 
-	    // Now, feature vector size = horizonColumns * MODEL_HEIGHT + 4.
-	    double[] features = new double[horizonColumns * MODEL_HEIGHT + 4];
-	    int index = 0;
+        return features;
+    }
 
-	    // 1) Fill horizon columns.
-	    for (int x = horizonStart; x < MODEL_WIDTH; x++) {
-	        byte[] col = model.get(x);
-	        for (int y = 0; y < MODEL_HEIGHT; y++) {
-	            features[index++] = col[y];
-	        }
-	    }
+    /**
+     * Ends the game when the plane crashes or goes out-of-bounds.
+     */
+    public void end() {
+        timer.stop();
+        currentFlightTime = time * (TIMER_INTERVAL / 1000.0);
+        terminalFlag = true;
 
-	    // 2) Append lastMovement.
-	    features[index++] = lastMovement;
+        // Update good flight flag if flight time exceeds threshold.
+        if (currentFlightTime > MAX_GOOD_FLIGHT_TIME && currentFlightTime > bestTime) {
+            bestTime = currentFlightTime;
+            goodFlag = true;
+        } else {
+            goodFlag = false;
+        }
 
-	    // 3) Append plane’s normalized row position.
-	    features[index++] = (double) playerRow / MODEL_HEIGHT;
-	    
-	    // 4) Append terminal flag.
-	    // For a terminal state, you may already have set a flag elsewhere.
-	    // For now, we assume end() sets terminalFlag (see later) – here we read it.
-	    features[index++] = terminalFlag ? 1.0 : 0.0;
-	    
-	    // 5) Append good flight flag.
-	    features[index] = goodFlag ? 1.0 : 0.0;
+        // Reset immediately if flight was very short.
+        if (currentFlightTime <= 10.0) {
+            reset();
+        } else {
+            gameOver = true;
+            repaint();
+        }
+    }
 
-	    return features;
-	}
-
-
-	/**
-	 * Called when the game ends (e.g. crash/out-of-bounds).
-	 */
-	public void end() {
-	    timer.stop(); // Stop updating the game
-
-	    // Calculate how many seconds have passed.
-	    currentFlightTime = time * (TIMER_INTERVAL / 1000.0);
-	    
-	    // Mark the current state as terminal.
-	    terminalFlag = true;
-	    
-	    // If this flight exceeds our maximum "good" flight time threshold,
-	    // update bestTime and mark the flight as good.
-	    if (currentFlightTime > MAX_GOOD_FLIGHT_TIME && currentFlightTime > bestTime) {
-	        bestTime = currentFlightTime;
-	        goodFlag = true;
-	    } else {
-	        goodFlag = false;
-	    }
-
-	    if (currentFlightTime <= 10.0) {
-	        reset();
-	    } else {
-	        gameOver = true;
-	        repaint();
-	    }
-	}
-
-	/*
-	 * Resets and restarts the game when the "S" key is pressed
-	 */
-	public void reset() {
-		if (auto && !trainingData.isEmpty()) {
-			autopilot.trainNetwork(trainingData, 2500);
-			trainingData.clear();
-		}
-
-		terminalFlag = false; // Reset the terminal flag.
-		model.stream().forEach(n -> Arrays.fill(n, 0, n.length, ZERO_SET));
-		playerRow = 11; // Centre the plane
-		time = 0; // Reset the clock
-		timer.restart(); // Start the animation
-	}
+    /**
+     * Resets the game. If autopilot is enabled and training data exists, trains the
+     * network before clearing the data.
+     */
+    public void reset() {
+        if (autoMode && !trainingData.isEmpty()) {
+            autopilot.trainNetwork(trainingData, 5000);
+            trainingData.clear();
+        }
+        terminalFlag = false;
+        model.forEach(column -> Arrays.fill(column, ZERO_SET));
+        playerRow = 11;
+        time = 0;
+        gameOver = false;
+        timer.restart();
+    }
 }
