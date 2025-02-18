@@ -11,7 +11,9 @@ import org.encog.neural.networks.layers.BasicLayer;
 
 import java.io.BufferedReader;
 import java.io.FileReader;
+import java.io.FileWriter;
 import java.io.IOException;
+import java.io.PrintWriter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -54,7 +56,7 @@ public class NeuralNetworkAutopilot implements IAutopilotController {
 	    }
 	    lastMovement = chosenMovement;
 
-	    System.out.println("Chosen Movement: " + chosenMovement + " | Temperature: " + temperature);
+	    //System.out.println("Chosen Movement: " + chosenMovement + " | Temperature: " + temperature);
 	    return chosenMovement;
 	}
 
@@ -139,30 +141,32 @@ public class NeuralNetworkAutopilot implements IAutopilotController {
 	    System.out.println("Final Weights: " + Arrays.toString(network.getFlat().getWeights()));
 	}
 
-	// New helper method to load training data from CSV without creating a new class
-	private List<TrainingSample> loadTrainingData(String csvFilePath) {
-	    List<TrainingSample> samples = new ArrayList<>();
-	    try (BufferedReader br = new BufferedReader(new FileReader(csvFilePath))) {
-	        String line;
-	        while ((line = br.readLine()) != null) {
-	            // Assuming the CSV file has features in all columns except the last, which is the label
-	            String[] tokens = line.split(",");
-	            double[] features = new double[tokens.length - 1];
-	            for (int i = 0; i < tokens.length - 1; i++) {
-	                features[i] = Double.parseDouble(tokens[i]);
+	public static void saveTrainingSamplesToCSV(String filePath, List<TrainingSample> samples, int featureCount) {
+	    try (PrintWriter pw = new PrintWriter(new FileWriter(filePath))) {
+	        // header
+	        StringBuilder header = new StringBuilder();
+	        for (int i = 1; i <= featureCount; i++) {
+	            header.append("f").append(i).append(",");
+	        }
+	        header.append("label");
+	        pw.println(header);
+
+	        // rows
+	        for (TrainingSample ts : samples) {
+	            StringBuilder row = new StringBuilder();
+	            double[] features = ts.getFeatures();
+
+	            for (double f : features) {
+	                row.append(f).append(",");
 	            }
-	            double label = Double.parseDouble(tokens[tokens.length - 1]);
-	            samples.add(new TrainingSample(features, label));
+
+	            // If ts.getLabel() is -1, 0, or 1, just append it directly.
+	            row.append((int)ts.getLabel());
+	            pw.println(row);
 	        }
 	    } catch (IOException e) {
 	        e.printStackTrace();
 	    }
-	    return samples;
 	}
 
-	// New convenience method to train directly from a CSV file
-	public void trainNetworkFromCSV(String csvFilePath, int epochs) {
-	    List<TrainingSample> trainingData = loadTrainingData(csvFilePath);
-	    trainNetwork(trainingData, epochs);
-	}
 }

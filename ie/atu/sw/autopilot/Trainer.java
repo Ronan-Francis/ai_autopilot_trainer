@@ -29,13 +29,15 @@ public class Trainer {
 	                + " | Time: " + epochTime + " ms");
 
 	        // Optionally, add more detailed logs every few epochs:
-	        if ((epoch + 1) % 10 == 0) {
+	        /*
+	         	        if ((epoch + 1) % 10 == 0) {
 	            System.out.println("Detailed info at epoch " + (epoch + 1) + ":");
 	            for (int i = 0; i < network.getStructure().getLayers().size(); i++) {
 	                System.out.println("Layer " + i + " weights: " + 
 	                        java.util.Arrays.toString(network.getFlat().getWeights()));
 	            }
-	        }
+	        }*/
+
 	    }
 	    trainer.finishTraining();
 	    System.out.println("Training complete. Final Error: " + trainer.getError());
