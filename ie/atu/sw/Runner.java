@@ -1,6 +1,10 @@
 package ie.atu.sw;
 
 import javax.swing.SwingUtilities;
+
+import ie.atu.sw.game.GameWindow;
+import ie.atu.sw.network.GameLogger;
+
 import static java.lang.System.*;
 
 public class Runner {
@@ -16,5 +20,16 @@ public class Runner {
 				out.println("[ERROR] Yikes...problem starting up " + e.getMessage());
 			}
 		});
+		
+		// Register shutdown hook to ensure logs are flushed when application exits
+		Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+			try {
+				// Flush any remaining logs and close log files
+				GameLogger.shutdown();
+				out.println("Logging system shutdown complete.");
+			} catch (Exception e) {
+				out.println("[ERROR] Problem shutting down logging system: " + e.getMessage());
+			}
+		}));
 	}
 }
