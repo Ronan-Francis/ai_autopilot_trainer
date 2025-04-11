@@ -13,538 +13,455 @@ import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
 import java.util.Arrays;
 import java.util.LinkedList;
+import java.util.List;
+import java.util.Timer;
+import java.util.TimerTask;
+import java.util.stream.Collectors;
 
 import javax.swing.JPanel;
-import javax.swing.Timer;
+import javax.swing.SwingUtilities;
 
-import ie.atu.sw.network.FeatureExtractor;
-import ie.atu.sw.network.FuzzyController;
-import ie.atu.sw.network.FuzzyVisualizer;
+import ie.atu.sw.network.AutopilotSystem;
 import ie.atu.sw.network.GameLogger;
-import ie.atu.sw.network.HybridController;
-import ie.atu.sw.network.NeuralNetworkController;
+import ie.atu.sw.ui.UIManager;
 
 public class GameView extends JPanel implements ActionListener {
-	// Some constants
-	private static final long serialVersionUID = 1L;
-	private static final int MODEL_WIDTH = 30;
-	private static final int MODEL_HEIGHT = 20;
-	private static final int SCALING_FACTOR = 30;
+    private static final long serialVersionUID = 1L;
+    private static final int MODEL_WIDTH = 30;
+    private static final int MODEL_HEIGHT = 20;
+    private static final int SCALING_FACTOR = 30;
+    private static final int MIN_TOP = 2;
+    private static final int MIN_BOTTOM = 18;
+    private static final int PLAYER_COLUMN = 15;
+    private static final int TIMER_INTERVAL = 100;
+    private static final long AUTO_RESTART_DELAY = 3000; // 3 seconds delay for auto restart
 
-	private static final int MIN_TOP = 2;
-	private static final int MIN_BOTTOM = 18;
-	private static final int PLAYER_COLUMN = 15;
-	private static final int TIMER_INTERVAL = 100;
+    private static final byte ONE_SET = 1;
+    private static final byte ZERO_SET = 0;
 
-	private static final byte ONE_SET = 1;
-	private static final byte ZERO_SET = 0;
+    private LinkedList<byte[]> model = new LinkedList<>();
+    private int prevTop = MIN_TOP;
+    private int prevBot = MIN_BOTTOM;
+    private javax.swing.Timer timer;
+    private long time;
+    private int playerRow = 11;
+    private int index = MODEL_WIDTH - 1;
+    private Dimension dim;
 
-	/*
-	 * The 30x20 game grid is implemented using a linked list of 30 elements, where
-	 * each element contains a byte[] of size 20.
-	 */
-	private LinkedList<byte[]> model = new LinkedList<>();
+    private Font font = new Font("Dialog", Font.BOLD, 50);
+    private Font over = new Font("Dialog", Font.BOLD, 100);
+    private Font debugFont = new Font("Monospaced", Font.PLAIN, 14);
 
-	// These two variables are used by the cavern generator.
-	private int prevTop = MIN_TOP;
-	private int prevBot = MIN_BOTTOM;
+    private Sprite sprite;
+    private Sprite dyingSprite;
 
-	// Once the timer stops, the game is over
-	private Timer timer;
-	private long time;
+    // Remove local autopilot flag—always use the manager.
+    private AutopilotManager autopilotManager;
 
-	private int playerRow = 11;
-	private int index = MODEL_WIDTH - 1; // Start generating at the end
-	private Dimension dim;
+    private boolean showVisualizations = false;
+    private boolean gameOverProcessed = false;
+    private boolean showDebugInfo = true;
+    private boolean showConfidenceGraph = true;
 
-	// Some fonts for the UI display
-	private Font font = new Font("Dialog", Font.BOLD, 50);
-	private Font over = new Font("Dialog", Font.BOLD, 100);
-	private Font debugFont = new Font("Monospaced", Font.PLAIN, 14);
+    public GameView(boolean autopilotEnabled) throws Exception {
+        setBackground(Color.LIGHT_GRAY);
+        setDoubleBuffered(true);
 
-	// The player and a sprite for an exploding plane
-	private Sprite sprite;
-	private Sprite dyingSprite;
+        // Set up the dimensions
+        dim = new Dimension(MODEL_WIDTH * SCALING_FACTOR, MODEL_HEIGHT * SCALING_FACTOR);
+        super.setPreferredSize(dim);
+        super.setMinimumSize(dim);
+        super.setMaximumSize(dim);
 
-	private boolean auto;
-	private boolean showVisualizations = false; // Initially off
+        // Initialize the game model
+        initModel();
 
-	// Neural network components
-	private FeatureExtractor featureExtractor;
-	private NeuralNetworkController nnController;
-	private FuzzyController fuzzyController;
-	private final Object trainingLock = new Object();
-	
-	// Debug display options
-	private boolean showDebugInfo = true;
-	private boolean showConfidenceGraph = true;
-	private ie.atu.sw.network.FuzzyVisualizer fuzzyVisualizer;
-	private HybridController hybridController;// Use both NN and fuzzy logic together
+        // Get the AutopilotManager instance
+        autopilotManager = AutopilotManager.getInstance();
+        
+        // Initialize in a sequence that avoids circular dependencies
+        if (autopilotEnabled) {
+            // First initialize core components
+            autopilotManager.initializeComponents();
+            
+            // Then complete any UI initialization that might have been deferred
+            autopilotManager.completeInitialization();
+            
+            // Finally start recording
+            autopilotManager.startRecording();
+        }
 
-	public GameView(boolean auto) throws Exception {
-		this.auto = auto; // Use the autopilot
-		setBackground(Color.LIGHT_GRAY);
-		setDoubleBuffered(true);
+        // Start the game timer
+        timer = new javax.swing.Timer(TIMER_INTERVAL, this);
+        timer.start();
+    }
 
-		// Creates a viewing area of 900 x 600 pixels
-		dim = new Dimension(MODEL_WIDTH * SCALING_FACTOR, MODEL_HEIGHT * SCALING_FACTOR);
-		super.setPreferredSize(dim);
-		super.setMinimumSize(dim);
-		super.setMaximumSize(dim);
+    private void initModel() {
+        for (int i = 0; i < MODEL_WIDTH; i++) {
+            model.add(new byte[MODEL_HEIGHT]);
+        }
+    }
 
-		// Initialize logging
-		GameLogger.initialize();
-		GameLogger.log(GameLogger.LogLevel.INFO, GameLogger.LogCategory.GENERAL, 
-				"Game initialized with auto mode: " + auto);
+    public void setSprite(Sprite s) {
+        this.sprite = s;
+    }
 
-		initModel();
+    public void setDyingSprite(Sprite s) {
+        this.dyingSprite = s;
+    }
 
-		// Initialize AI components
-		initAI();
+    public void paintComponent(Graphics g) {
+        super.paintComponent(g);
+        Graphics2D g2 = (Graphics2D) g;
 
-		timer = new Timer(TIMER_INTERVAL, this); // Timer calls actionPerformed() every second
-		timer.start();
-	}
+        g2.setColor(Color.LIGHT_GRAY);
+        g2.fillRect(0, 0, dim.width, dim.height);
 
-	private void initAI() {
-	    // Create feature extractors (both original and simplified)
-	    featureExtractor = new FeatureExtractor();
+        int x1 = 0, y1 = 0;
+        for (int x = 0; x < MODEL_WIDTH; x++) {
+            for (int y = 0; y < MODEL_HEIGHT; y++) {
+                x1 = x * SCALING_FACTOR;
+                y1 = y * SCALING_FACTOR;
 
-	    // Create neural network controllers
-	    nnController = new NeuralNetworkController(featureExtractor);
+                if (model.get(x)[y] != 0) {
+                    if (y == playerRow && x == PLAYER_COLUMN) {
+                        timer.stop(); // Crash...
+                    }
+                    g2.setColor(Color.BLACK);
+                    g2.fillRect(x1, y1, SCALING_FACTOR, SCALING_FACTOR);
+                }
 
-	    // Create fuzzy controllers
-	    fuzzyController = new FuzzyController(); 
-	    fuzzyVisualizer = new FuzzyVisualizer(fuzzyController); 
-	    
-	    // Create the hybrid controller
-	    hybridController = new HybridController(nnController, fuzzyController);
-	    
-	    // Create fuzzy visualizer if debug is enabled
-	    //fuzzyVisualizer = new FuzzyVisualizer(impFuzzyController);
+                if (x == PLAYER_COLUMN && y == playerRow) {
+                    if (timer.isRunning()) {
+                        g2.drawImage(sprite.getNext(), x1, y1, null);
+                    } else {
+                        g2.drawImage(dyingSprite.getNext(), x1, y1, null);
+                    }
+                }
+            }
+        }
 
-	    // Train the networks if in auto mode (assuming training data exists)
-	    if (auto) {
-	        GameLogger.log(GameLogger.LogLevel.INFO, GameLogger.LogCategory.GENERAL,
-	                "Auto mode detected. Attempting to load neural network models...");
+        g2.setFont(font);
+        g2.setColor(Color.RED);
+        g2.fillRect(1 * SCALING_FACTOR, 15 * SCALING_FACTOR, 400, 3 * SCALING_FACTOR);
+        g2.setColor(Color.WHITE);
+        g2.drawString("Time: " + (int) (time * (TIMER_INTERVAL / 1000.0d)) + "s", 1 * SCALING_FACTOR + 10,
+                (15 * SCALING_FACTOR) + (2 * SCALING_FACTOR));
 
-	        // Try to load both models, or train if not available
-	        boolean originalLoaded = nnController.loadModel();
-	        
-	        if (!originalLoaded) {
-	            GameLogger.log(GameLogger.LogLevel.INFO, GameLogger.LogCategory.NEURAL_NETWORK,
-	                    "One or more models not found or loading failed. Attempting to train...");
-	            synchronized (trainingLock) {
-	                if (!originalLoaded) nnController.trainNetwork();
-	            }
-	        }
-	    }
-	}
+        if (showDebugInfo) {
+            drawDebugInfo(g2);
+        }
 
+        if (!timer.isRunning() && !gameOverProcessed) {
+            g2.setFont(over);
+            g2.setColor(Color.RED);
+            g2.drawString("Game Over!", (MODEL_WIDTH / 5) * SCALING_FACTOR, (MODEL_HEIGHT / 2) * SCALING_FACTOR);
 
-	// Build our game grid
-	private void initModel() {
-		for (int i = 0; i < MODEL_WIDTH; i++) {
-			model.add(new byte[MODEL_HEIGHT]);
-		}
-	}
+            // Stop recording via the manager and schedule a restart.
+            if (autopilotManager != null) {
+                autopilotManager.stopRecording(true);
+                
+                // Update UI state with crash
+                UIManager.getInstance().updateGameState(model, playerRow);
+                
+                gameOverProcessed = true;
+                GameLogger.log(GameLogger.LogLevel.INFO, GameLogger.LogCategory.GENERAL,
+                        "Flight ended. Auto-restarting...");
+                Timer autoRestartTimer = new Timer();
+                autoRestartTimer.schedule(new TimerTask() {
+                    @Override
+                    public void run() {
+                        SwingUtilities.invokeLater(() -> reset());
+                    }
+                }, AUTO_RESTART_DELAY);
+                
+                // Only retrain if NOT in neural network mode AND flight time is sufficient
+                if (autopilotManager.getMode() != AutopilotSystem.Mode.NEURAL_NETWORK) {
+                    // Change from 300 (30 seconds) to a more descriptive constant
+                    long MINIMUM_FLIGHT_TIME_FOR_TRAINING = 300; // 30 seconds at 100ms intervals
+                    if (time >= MINIMUM_FLIGHT_TIME_FOR_TRAINING) {
+                        autopilotManager.retrainModel();
+                    } else {
+                        GameLogger.log(GameLogger.LogLevel.INFO, GameLogger.LogCategory.NEURAL_NETWORK,
+                                "Flight too short for training: " + time + " < " + MINIMUM_FLIGHT_TIME_FOR_TRAINING);
+                    }
+                } else {
+                    GameLogger.log(GameLogger.LogLevel.INFO, GameLogger.LogCategory.NEURAL_NETWORK,
+                            "Skipping retraining in NEURAL_NETWORK mode");
+                }
+            }
+        }
+    }
 
-	public void setSprite(Sprite s) {
-		this.sprite = s;
-	}
+    private void drawDebugInfo(Graphics2D g2) {
+        g2.setFont(debugFont);
+        int controlPanelWidth = 300;
+        int controlPanelHeight = 150;
+        int controlPanelX = 30;
+        int controlPanelY = 30;
 
-	public void setDyingSprite(Sprite s) {
-		this.dyingSprite = s;
-	}
+        g2.setColor(new Color(0, 0, 0, 180));
+        g2.fillRect(controlPanelX, controlPanelY, controlPanelWidth, controlPanelHeight);
 
-	// Called every second by actionPerformed(). Paint methods are usually ugly.
-	public void paintComponent(Graphics g) {
-		super.paintComponent(g);
-		var g2 = (Graphics2D) g;
+        g2.setColor(Color.WHITE);
+        String modeText = "MODE: ";
+        if (autopilotManager != null) {
+            AutopilotSystem.Mode mode = autopilotManager.getMode();
+            if (mode != null) {
+                switch (mode) {
+                    case NEURAL_NETWORK:
+                        modeText += "NEURAL NETWORK";
+                        g2.setColor(Color.CYAN);
+                        break;
+                    case HYBRID:
+                        modeText += "NEURAL NETWORK + TEACHER";
+                        g2.setColor(Color.GREEN);
+                        break;
+                    case TEACHER:
+                        modeText += "TEACHER ONLY";
+                        g2.setColor(Color.YELLOW);
+                        break;
+                }
+            }
+        } else {
+            modeText += "UNKNOWN";
+        }
+        g2.drawString(modeText, controlPanelX + 10, controlPanelY + 20);
+        g2.setColor(Color.WHITE);
 
-		g2.setColor(Color.LIGHT_GRAY);
-		g2.fillRect(0, 0, dim.width, dim.height);
+        g2.drawString("NEURAL NETWORK: " + GameLogger.getLastNeuralNetworkDecision(), controlPanelX + 10,
+                controlPanelY + 40);
+        g2.drawString("ACTUAL DECISION: " + GameLogger.getLastActualDecision(), controlPanelX + 10, controlPanelY + 60);
+        g2.drawString("FLIGHT TIME: " + (int) (time * (TIMER_INTERVAL / 1000.0d)) + "s", controlPanelX + 10,
+                controlPanelY + 80);
 
-		int x1 = 0, y1 = 0;
-		for (int x = 0; x < MODEL_WIDTH; x++) {
-			for (int y = 0; y < MODEL_HEIGHT; y++) {
-				x1 = x * SCALING_FACTOR;
-				y1 = y * SCALING_FACTOR;
+        if (autopilotManager != null && autopilotManager.isRetraining()) {
+            g2.setColor(Color.ORANGE);
+            g2.drawString("RETRAINING IN PROGRESS...", controlPanelX + 10, controlPanelY + 100);
+            g2.setColor(Color.WHITE);
+        }
+        
+        // Add helpful F-key hints
+        g2.setColor(new Color(63, 127, 255));
+        g2.drawString("F1: Help | F2: Monitor | F3: Teacher | F4: Analyzer", controlPanelX + 10, controlPanelY + 130);
 
-				if (model.get(x)[y] != 0) {
-					if (y == playerRow && x == PLAYER_COLUMN) {
-						timer.stop(); // Crash...
-					}
-					g2.setColor(Color.BLACK);
-					g2.fillRect(x1, y1, SCALING_FACTOR, SCALING_FACTOR);
-				}
+        if (showVisualizations && showConfidenceGraph) {
+            drawConfidenceGraph(g2, controlPanelX + 10, controlPanelY + 160);
+        }
+    }
 
-				if (x == PLAYER_COLUMN && y == playerRow) {
-					if (timer.isRunning()) {
-						g2.drawImage(sprite.getNext(), x1, y1, null);
-					} else {
-						g2.drawImage(dyingSprite.getNext(), x1, y1, null);
-					}
+    /**
+     * Draws a confidence graph showing neural network prediction confidence.
+     * 
+     * @param g2 The Graphics2D object to draw with
+     * @param x The x-coordinate to start drawing at
+     * @param y The y-coordinate to start drawing at
+     */
+    private void drawConfidenceGraph(Graphics2D g2, int x, int y) {
+        // Get confidence history from the game logger
+    	List<Double> confidenceHistory = Arrays.stream(GameLogger.getLastConfidenceScores()).boxed().collect(Collectors.toList());
+        if (confidenceHistory == null || confidenceHistory.isEmpty()) {
+            g2.setColor(Color.GRAY);
+            g2.drawString("No confidence data available", x, y + 10);
+            return;
+        }
+        
+        // Graph dimensions
+        int graphWidth = 280;
+        int graphHeight = 100;
+        
+        // Draw graph background
+        g2.setColor(new Color(0, 0, 0, 120));
+        g2.fillRect(x, y, graphWidth, graphHeight);
+        
+        // Draw graph title
+        g2.setColor(Color.WHITE);
+        g2.drawString("Neural Network Confidence", x + 5, y + 15);
+        
+        // Draw axes
+        g2.drawLine(x + 5, y + graphHeight - 5, x + graphWidth - 5, y + graphHeight - 5); // X-axis
+        g2.drawLine(x + 5, y + 20, x + 5, y + graphHeight - 5); // Y-axis
+        
+        // Label axes
+        g2.setFont(new Font("Monospaced", Font.PLAIN, 10));
+        g2.drawString("Time", x + graphWidth/2, y + graphHeight - 5 + 12);
+        g2.drawString("100%", x - 5, y + 20);
+        g2.drawString("0%", x - 5, y + graphHeight - 5);
+        
+        // Limit the number of points to display
+        int maxPoints = 50;
+        int startIdx = Math.max(0, confidenceHistory.size() - maxPoints);
+        List<Double> displayedHistory = confidenceHistory.subList(startIdx, confidenceHistory.size());
+        
+        // Draw data points
+        if (displayedHistory.size() > 1) {
+            int plotWidth = graphWidth - 15;
+            double xStep = (double) plotWidth / (displayedHistory.size() - 1);
+            
+            // Draw danger threshold (60% confidence)
+            g2.setColor(Color.RED);
+            int thresholdY = y + 20 + (int)((1 - 0.6) * (graphHeight - 25));
+            g2.drawLine(x + 5, thresholdY, x + graphWidth - 5, thresholdY);
+            g2.drawString("60%", x - 5, thresholdY);
+            
+            // Draw confidence line
+            g2.setColor(Color.CYAN);
+            for (int i = 0; i < displayedHistory.size() - 1; i++) {
+                int x1 = x + 5 + (int)(i * xStep);
+                int y1 = y + 20 + (int)((1 - displayedHistory.get(i)) * (graphHeight - 25));
+                int x2 = x + 5 + (int)((i + 1) * xStep);
+                int y2 = y + 20 + (int)((1 - displayedHistory.get(i + 1)) * (graphHeight - 25));
+                
+                g2.drawLine(x1, y1, x2, y2);
+                
+                // Highlight low confidence points
+                if (displayedHistory.get(i) < 0.6) {
+                    g2.setColor(Color.RED);
+                    g2.fillOval(x1 - 2, y1 - 2, 4, 4);
+                    g2.setColor(Color.CYAN);
+                }
+            }
+            
+            // Draw the last point
+            int lastIndex = displayedHistory.size() - 1;
+            int lastX = x + 5 + (int)(lastIndex * xStep);
+            int lastY = y + 20 + (int)((1 - displayedHistory.get(lastIndex)) * (graphHeight - 25));
+            if (displayedHistory.get(lastIndex) < 0.6) {
+                g2.setColor(Color.RED);
+                g2.fillOval(lastX - 2, lastY - 2, 4, 4);
+            } else {
+                g2.setColor(Color.WHITE);
+                g2.fillOval(lastX - 2, lastY - 2, 4, 4);
+            }
+        }
+    }
 
-				}
-			}
-		}
-
-		/*
-		 * Not pretty, but good enough for this project... The compiler will tidy up and
-		 * optimise all of the arithmetics with constants below.
-		 */
-		g2.setFont(font);
-		g2.setColor(Color.RED);
-		g2.fillRect(1 * SCALING_FACTOR, 15 * SCALING_FACTOR, 400, 3 * SCALING_FACTOR);
-		g2.setColor(Color.WHITE);
-		g2.drawString("Time: " + (int) (time * (TIMER_INTERVAL / 1000.0d)) + "s", 1 * SCALING_FACTOR + 10,
-				(15 * SCALING_FACTOR) + (2 * SCALING_FACTOR));
-		
-		// Draw debug info if enabled
-		if (showDebugInfo && auto) {
-			drawDebugInfo(g2);
-		}
-
-		if (!timer.isRunning()) {
-		    g2.setFont(over);
-		    g2.setColor(Color.RED);
-		    g2.drawString("Game Over!", MODEL_WIDTH / 5 * SCALING_FACTOR, MODEL_HEIGHT / 2 * SCALING_FACTOR);
-		    
-		    // When game is over, discard recent samples and train the neural network 
-		    if (!auto && featureExtractor != null) {
-		        // Discard samples just before crash
-		        featureExtractor.discardBufferedSamples();
-		        
-		        GameLogger.log(GameLogger.LogLevel.INFO, GameLogger.LogCategory.GENERAL,
-		                "Game over. Training neural network with " + 
-		                featureExtractor.getSampleCount() + " collected samples...");
-		        new Thread(() -> {
-		            synchronized(trainingLock) {
-		                nnController.trainNetwork();
-		            }
-		        }).start();
-		    }
-		}
-	}
-	
-	/**
-	 * Draw debug information on the screen.
-	 * 
-	 * @param g2 Graphics context
-	 */
-	private void drawDebugInfo(Graphics2D g2) {
-	    g2.setFont(debugFont);
-	    
-	    // Draw decision information
-	    int startX = 5 * SCALING_FACTOR;
-	    int startY = 1 * SCALING_FACTOR;
-	    
-	    g2.setColor(new Color(0, 0, 0, 180)); // Semi-transparent black background
-	    g2.fillRect(startX, startY, 19 * SCALING_FACTOR, 5 * SCALING_FACTOR);
-	    
-	    g2.setColor(Color.WHITE);
-	    g2.drawString("ORIGINAL NN: " + GameLogger.getLastNeuralNetworkDecision(), 
-	            startX + 10, startY + 20);
-	    g2.drawString("FUZZY CONTROLLER: " + GameLogger.getLastFuzzyControllerDecision(), 
-	            startX + 10, startY + 60);
-	    g2.drawString("ACTUAL DECISION: " + GameLogger.getLastActualDecision(), 
-	            startX + 10, startY + 80);
-	    g2.drawString("HYBRID MODE: " + (hybridController.isHybridModeEnabled() ? "ENABLED" : "DISABLED"), 
-	            startX + 10, startY + 100);
-	    
-	    // Only draw visualizations if the flag is enabled
-	    if (showVisualizations) {
-	        // Draw confidence bar graph if enabled
-	        if (showConfidenceGraph) {
-	            drawConfidenceGraph(g2, startX + 10, startY + 120);
-	        }
-	        
-	        // Draw fuzzy controller visualization
-	        if (fuzzyVisualizer != null) {
-	            fuzzyVisualizer.draw(g2, model, playerRow, startX + 500, startY + 220);
-	        }
-	    }
-	}
-	/**
-	 * Draw a bar graph of the neural network confidence scores.
-	 * 
-	 * @param g2 Graphics context
-	 * @param x X position
-	 * @param y Y position
-	 */
-	private void drawConfidenceGraph(Graphics2D g2, int x, int y) {
-		double[] scores = GameLogger.getLastConfidenceScores();
-		
-		if (scores == null) {
-			return;
-		}
-		
-		int barWidth = 40;
-		int barMaxHeight = 80;
-		int spacing = 20;
-		
-		g2.setColor(Color.WHITE);
-		g2.drawString("CONFIDENCE SCORES:", x, y);
-		
-		y += 20;
-		
-		String[] actions = {"UP", "STAY", "DOWN"};
-		Color[] colors = {Color.BLUE, Color.GREEN, Color.RED};
-		
-		for (int i = 0; i < scores.length; i++) {
-			int barHeight = (int)(scores[i] * barMaxHeight);
-			
-			g2.setColor(colors[i]);
-			g2.fillRect(x + (barWidth + spacing) * i, 
-					y + barMaxHeight - barHeight, 
-					barWidth, barHeight);
-			
-			g2.setColor(Color.WHITE);
-			g2.drawRect(x + (barWidth + spacing) * i, 
-					y, barWidth, barMaxHeight);
-			
-			String scoreText = String.format("%.1f%%", scores[i] * 100);
-			g2.drawString(actions[i], 
-					x + (barWidth + spacing) * i + barWidth/2 - 10, 
-					y + barMaxHeight + 15);
-			g2.drawString(scoreText, 
-					x + (barWidth + spacing) * i + barWidth/2 - 15, 
-					y + barMaxHeight + 30);
-		}
-	}
-
-	// Move the plane up or down
-	public void move(int step) {
-	    // Ensure we stay within bounds
-	    int newPlayerRow = playerRow + step;
-	    if (newPlayerRow < 0) {
-	        step = -playerRow; // Stay at top
-	    } else if (newPlayerRow >= MODEL_HEIGHT) {
-	        step = MODEL_HEIGHT - 1 - playerRow; // Stay at bottom
-	    }
-	    
-	    // In manual mode, record the training sample and check for danger
-	    if (!auto && featureExtractor != null && timer.isRunning()) {
-	        // Extract features from current state
-	        double[] features = featureExtractor.extractFeatures(model, playerRow);
-	        
-	        // Check if we're in danger using the fuzzy controller
-	        boolean inDanger = false;
-	        int fuzzyAction = 0;
-	        
-	        if (fuzzyController != null) {
-	            // Check for danger
-	            inDanger = fuzzyController.getLastDangerState();
-	            
-	            // If in danger, get fuzzy controller recommendation
-	            if (inDanger) {
-	                fuzzyAction = fuzzyController.determineAction(model, playerRow);
-	                GameLogger.log(GameLogger.LogLevel.INFO, GameLogger.LogCategory.FUZZY_CONTROLLER,
-	                    "MANUAL MODE: Danger detected! Fuzzy suggests: " + actionToString(fuzzyAction));
-	                
-	                // We don't force the fuzzy action, but we record it for training
-	                GameLogger.log(GameLogger.LogLevel.INFO, GameLogger.LogCategory.GAME_STATE,
-	                    "MANUAL: Fuzzy suggestion " + actionToString(fuzzyAction) + 
-	                    ", Player chose " + actionToString(step));
-	            }
-	        }
-	        
-	        // Map the manual action to a label
-	        int action = featureExtractor.mapActionToLabel(step);
-	        
-	        // Record the sample with the manual action
-	        featureExtractor.recordSample(features, action);
-	        
-	        // Set last action
-	        featureExtractor.setLastAction(action);
-	        
-	        // Log the manual action
-	        GameLogger.logFinalAction(step);
-	    }
-	    
-	    // Actually move the player
-	    playerRow += step;
-	}
+	public void actionPerformed(ActionEvent e) {
+        time++;
+        if (autopilotManager != null) {
+            autopilotManager.updateFlightTime(time);
+        }
+        repaint();
+        index++;
+        index = (index == MODEL_WIDTH) ? 0 : index;
+        generateNext();
+        if (autopilotManager != null) {
+            autoMove();
+            
+            // Update UI with current game state
+            UIManager.getInstance().updateGameState(model, playerRow);
+        }
+    }
 
 	/**
-	 * Helper method to convert action to string
-	 */
-	private String actionToString(int action) {
-	    switch (action) {
-	        case -1: return "UP";
-	        case 0: return "STAY";
-	        case 1: return "DOWN";
-	        default: return "UNKNOWN";
-	    }
-	}
-	/*
-	 * ---------- AUTOPILOT! ---------- The following implementation uses the neural
-	 * network to control the plane.
-	 * 
-	 */
-	// Fixed autoMove method with improved logic
-
-	/**
-	 * Controls the autopilot movement using neural network and improved fuzzy logic.
-	 * This updated version uses adaptive thresholds and better path planning.
+	 * Handles automated player movement based on autopilot decisions.
+	 * Called each game tick when autopilot is enabled.
 	 */
 	private void autoMove() {
-	    if (nnController == null) {
-	        move(current().nextInt(-1, 2)); // fallback
+	    if (autopilotManager == null) {
 	        return;
 	    }
-
-	    // Use the hybrid controller to determine the action
-	    int action = hybridController.determineAction(model, playerRow);
-
-	    // Constrain movement within game bounds
-	    int newRow = playerRow + action;
-	    if (newRow < 0) {
-	        action = -playerRow;
-	    } else if (newRow >= MODEL_HEIGHT) {
-	        action = MODEL_HEIGHT - 1 - playerRow;
-	    }
-
-	    // Move the player
-	    move(action);
-	}
-	
-	
-	public void actionPerformed(ActionEvent e) {
-	    time++; // Update our timer		
-	    GameLogger.logGameState(playerRow, time);// Log game state		
-	    this.repaint(); // Repaint the cavern
 	    
-	    // Update the next index to generate
-	    index++;
-	    index = (index == MODEL_WIDTH) ? 0 : index;
-
-	    generateNext(); // Generate the next part of the cave
+	    // Get action from the autopilot manager
+	    int step = autopilotManager.determineAction(model, playerRow);
 	    
-	    // In auto mode, use the AI to control the plane
-	    if (auto) {
-	        autoMove();
-	    } 
-	    // In manual mode, still evaluate danger with fuzzy controller (but don't move)
-	    else if (fuzzyController != null) {
-	        // Just determine the action to update the danger state
-	        fuzzyController.determineAction(model, playerRow);
-	    }
-
-	    // Record training data in manual mode on every frame
-	    if (!auto && featureExtractor != null) {
-	        double[] features = featureExtractor.extractFeatures(model, playerRow);
-	        int action = featureExtractor.getLastAction();
-	        
-	        // We already record during moves, but this captures state even when not moving
-	        if (time % 3 == 0) { // Reduce frequency a bit to avoid too many "stay" samples
-	            featureExtractor.recordSample(features, action);
-	        }
-	        
-	        // Commit samples periodically during successful flight
-	        if (time > 0 && time % 30 == 0) {
-	            commitSamplesIfSuccessful();
-	        }
-	    }
+	    // Apply the movement
+	    move(step);
 	}
 	
-	private void commitSamplesIfSuccessful() {
-	    // Consider flight successful if it has lasted for at least a few seconds
-	    if (!auto && featureExtractor != null && time > 0 && time % 30 == 0) {
-	        featureExtractor.commitAllSamples();
-	        GameLogger.log(GameLogger.LogLevel.INFO, GameLogger.LogCategory.FEATURE_EXTRACTOR,
-	                "Committed samples after " + (int)(time * (TIMER_INTERVAL / 1000.0d)) + "s of successful flight");
-	    }
-	}
-
-	// Add method to clear training data
-	public void clearTrainingData() {
-		if (featureExtractor != null) {
-			GameLogger.log(GameLogger.LogLevel.INFO, GameLogger.LogCategory.FEATURE_EXTRACTOR,
-					"Clearing training data...");
-			featureExtractor.clearTrainingData();
-		}
-	}
-
-	/*
-	 * Generate the next layer of the cavern. Use the linked list to move the
-	 * current head element to the tail and then randomly decide whether to increase
-	 * or decrease the cavern.
-	 */
-	private void generateNext() {
-		var next = model.pollFirst();
-		model.addLast(next); // Move the head to the tail
-		Arrays.fill(next, ONE_SET); // Fill everything in
-
-		// Flip a coin to determine if we could grow or shrink the cave
-		var minspace = 4; // Smaller values will create a cave with smaller spaces
-		prevTop += current().nextBoolean() ? 1 : -1;
-		prevBot += current().nextBoolean() ? 1 : -1;
-		prevTop = max(MIN_TOP, min(prevTop, prevBot - minspace));
-		prevBot = min(MIN_BOTTOM, max(prevBot, prevTop + minspace));
-
-		// Fill in the array with the carved area
-		Arrays.fill(next, prevTop, prevBot, ZERO_SET);
-	}
-
 	/**
-	 * Returns the neural network controller for external use.
+	 * Moves the player based on the given step direction.
 	 * 
-	 * @return The neural network controller or null if not initialized
+	 * @param step The direction to move (-1 for up, 0 for stay, 1 for down)
 	 */
-	public NeuralNetworkController getNeuralNetworkController() {
-		return nnController;
+	public void move(int step) {
+	    // Boundary check
+	    if ((playerRow == MIN_TOP && step == -1) || (playerRow == MIN_BOTTOM - 1 && step == 1)) {
+	        return;
+	    }
+	    
+	    // Move the player
+	    playerRow += step;
+	    
+	    // Check for collision after move
+	    if (model.get(PLAYER_COLUMN)[playerRow] != 0) {
+	        timer.stop(); // Crash...
+	    }
 	}
 
-	/**
-	 * Resets and restarts the game when the "S" key is pressed. Also resets the
-	 * player position and game time.
-	 */
+	private void generateNext() {
+        byte[] next = model.pollFirst();
+        model.addLast(next);
+        Arrays.fill(next, ONE_SET);
+        int minspace = 4;
+        prevTop += current().nextBoolean() ? 1 : -1;
+        prevBot += current().nextBoolean() ? 1 : -1;
+        prevTop = max(MIN_TOP, min(prevTop, prevBot - minspace));
+        prevBot = min(MIN_BOTTOM, max(prevBot, prevTop + minspace));
+        Arrays.fill(next, prevTop, prevBot, ZERO_SET);
+    }
+
 	public void reset() {
-		GameLogger.log(GameLogger.LogLevel.INFO, GameLogger.LogCategory.GAME_STATE,
-				"Game reset");
-				
-		model.stream() // Zero out the grid
-				.forEach(n -> Arrays.fill(n, 0, n.length, ZERO_SET));
-		playerRow = 11; // Centre the plane
-		time = 0; // Reset the clock
-		timer.restart(); // Start the animation
+	    // Check if this is a successful flight (timer was running) and autopilot is active
+	    boolean wasSuccessfulFlight = timer.isRunning() && autopilotManager != null && autopilotManager.isRecording();
+	    boolean shouldConsiderRetraining = false;
+	    
+	    // Store current mode and flight time before stopping recording
+	    AutopilotSystem.Mode currentMode = null;
+	    long flightDuration = 0;
+	    
+	    if (autopilotManager != null) {
+	        currentMode = autopilotManager.getMode();
+	        flightDuration = time;
+	        
+	        // Stop recording if needed
+	        if (autopilotManager.isRecording()) {
+	            autopilotManager.stopRecording(false); // false = successful completion
+	            shouldConsiderRetraining = wasSuccessfulFlight;
+	        }
+	    }
+	    
+	    // Reset game state
+	    model.forEach(n -> Arrays.fill(n, ZERO_SET));
+	    playerRow = 11;
+	    time = 0;
+	    gameOverProcessed = false;
+	    timer.restart();
+	    
+	    // Consider retraining for successful flights
+	    if (shouldConsiderRetraining && currentMode != null && currentMode != AutopilotSystem.Mode.NEURAL_NETWORK) {
+	        // Define minimum flight time for training (30 seconds)
+	        long MINIMUM_FLIGHT_TIME_FOR_TRAINING = 300; // 30 seconds at 100ms intervals
+	        
+	        if (flightDuration >= MINIMUM_FLIGHT_TIME_FOR_TRAINING) {
+	            GameLogger.log(GameLogger.LogLevel.INFO, GameLogger.LogCategory.NEURAL_NETWORK,
+	                    "Successful flight completed. Initiating retraining...");
+	            autopilotManager.retrainModel();
+	        } else {
+	            GameLogger.log(GameLogger.LogLevel.INFO, GameLogger.LogCategory.NEURAL_NETWORK,
+	                    "Flight too short for training: " + flightDuration + " < " + MINIMUM_FLIGHT_TIME_FOR_TRAINING);
+	        }
+	    }
+	    
+	    // Restart recording
+	    if (autopilotManager != null && !autopilotManager.isRecording()) {
+	        autopilotManager.startRecording();
+	    }
+	    
+	    // Update UI state
+	    UIManager.getInstance().updateGameState(model, playerRow);
 	}
 
-	/**
-	 * Toggles between using just the neural network and the hybrid approach. When
-	 * hybrid control is enabled, the fuzzy controller is used as a fallback.
-	 */
-	public void toggleHybridControl() {
-	    hybridController.toggleHybridMode();
-	    GameLogger.log(GameLogger.LogLevel.INFO, GameLogger.LogCategory.GENERAL,
-	            "Hybrid control " + (hybridController.isHybridModeEnabled() ? "enabled" : "disabled"));
-	}
-	
-	/**
-	 * Toggles the debug information display.
-	 */
-	public void toggleDebugInfo() {
-		showDebugInfo = !showDebugInfo;
-		GameLogger.log(GameLogger.LogLevel.INFO, GameLogger.LogCategory.GENERAL,
-				"Debug info display " + (showDebugInfo ? "enabled" : "disabled"));
-	}
-	
-	/**
-	 * Toggles the confidence graph display.
-	 */
-	public void toggleConfidenceGraph() {
-		showConfidenceGraph = !showConfidenceGraph;
-		GameLogger.log(GameLogger.LogLevel.INFO, GameLogger.LogCategory.GENERAL,
-				"Confidence graph " + (showConfidenceGraph ? "enabled" : "disabled"));
-	}
-	/**
-	 * Toggles the visualization display.
-	 */
-	public void toggleVisualizations() {
-	    showVisualizations = !showVisualizations;
-	    GameLogger.log(GameLogger.LogLevel.INFO, GameLogger.LogCategory.GENERAL,
-	            "Visualizations " + (showVisualizations ? "enabled" : "disabled"));
-	}
+    public void toggleDebugInfo() {
+        showDebugInfo = !showDebugInfo;
+    }
+
+    public void toggleConfidenceGraph() {
+        showConfidenceGraph = !showConfidenceGraph;
+    }
+
+    public void toggleVisualizations() {
+        showVisualizations = !showVisualizations;
+    }
+    
 }
